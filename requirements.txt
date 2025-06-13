@@ -1,0 +1,4 @@
+instagrapi==2.1.2
+moviepy==1.0.3
+imageio-ffmpeg>=0.2.0
+schedule>=1.2.0
