@@ -1,169 +1,227 @@
+# main.py
 import os
 import time
 import logging
 import schedule
-import json
+import sqlite3
+import asyncio
+import nest_asyncio
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired, PleaseWaitFewMinutes, ClientError
 from concurrent.futures import ThreadPoolExecutor
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
-import asyncio
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from dotenv import load_dotenv
 
-# === SETTINGS ===
+# === LOAD ENV ===
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_IDS = [2119921139]  # Replace with your Telegram user ID
+
+# === CONSTANTS ===
 BASE_DIR = os.getcwd()
-  # Update if folder is elsewhere
 MAX_RETRIES = 3
-MAX_THREADS = 3
+MAX_THREADS = 5
 executor = ThreadPoolExecutor(max_workers=MAX_THREADS)
+last_upload_logs = {}
 
-# === TELEGRAM CONFIG ===
-TELEGRAM_TOKEN = "7656010953:AAGTRV5AYi2Ci641hP9nPg-zkXfjPsOnHms"
-ADMIN_USER_ID = 2119921139
-last_upload_log = "No uploads yet."
+# === DB SETUP ===
+db_path = os.path.join(BASE_DIR, "accounts.db")
+conn = sqlite3.connect(db_path, check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute("CREATE TABLE IF NOT EXISTS accounts (username TEXT PRIMARY KEY, password TEXT, caption TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS schedules (username TEXT, time TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS video_captions (username TEXT, filename TEXT, caption TEXT)")
+conn.commit()
 
-# === ACCOUNTS ===
-accounts = [
-    {
-        "username": "bgmi_hack07",
-        "password": "567567",
-        "upload_times": ["13:24", "16:30", "19:30", "22:30", "01:30", "04:30", "07:30", "10:30", "12:00", "12:47"],
-        "upload_delay": 30,
-        "caption": "💥 #Hack download link 🖇️ bio #bgmi #pubg #trending #battlegroundmobileindia #bgmifunny #funny #pubgmoments #bgmilovers❤️ #feed #explore #pubgmoments #pubgm #pubgmobile #pubgvideos #pubgmeme #pubgfunny #fyp #pub"
-    }
-]
+# === CORE FUNCTIONS ===
+def get_accounts():
+    cursor.execute("SELECT * FROM accounts")
+    return cursor.fetchall()
 
-# === FUNCTIONS ===
+def get_schedule(username):
+    cursor.execute("SELECT time FROM schedules WHERE username = ?", (username,))
+    return [row[0] for row in cursor.fetchall()]
+
+def add_schedule(username, time_str):
+    cursor.execute("INSERT INTO schedules (username, time) VALUES (?, ?)", (username, time_str))
+    conn.commit()
+
+def remove_schedule(username, time_str):
+    cursor.execute("DELETE FROM schedules WHERE username = ? AND time = ?", (username, time_str))
+    conn.commit()
+
 def load_client(username):
     cl = Client()
     cl.set_device({"manufacturer": "OnePlus", "model": "6T", "android_version": 29})
     session_path = f"session_{username}.json"
-    try:
-        if os.path.exists(session_path):
+    if os.path.exists(session_path):
+        try:
             cl.load_settings(session_path)
             cl.login(username, None)
-            logging.info(f"✅ Session loaded for {username}")
-        else:
-            raise FileNotFoundError
-    except (LoginRequired, FileNotFoundError):
-        logging.warning(f"🔐 Login required for {username}")
-        password = next(acc['password'] for acc in accounts if acc['username'] == username)
-        cl.login(username, password)
+        except:
+            os.remove(session_path)
+    if not cl.user_id:
+        cursor.execute("SELECT password FROM accounts WHERE username = ?", (username,))
+        row = cursor.fetchone()
+        if not row:
+            raise Exception(f"Account '{username}' not found.")
+        cl.login(username, row[0])
         cl.dump_settings(session_path)
-        logging.info(f"💾 New session saved for {username}")
     return cl
 
 def upload_video(cl, video_path, caption):
-    global last_upload_log
     for attempt in range(MAX_RETRIES):
         try:
-            logging.info(f"⬆️ Uploading {video_path}")
             cl.clip_upload(video_path, caption)
-            last_upload_log = f"✅ Uploaded: {video_path}"
-            return True
+            return f"✅ Uploaded: {os.path.basename(video_path)}"
         except PleaseWaitFewMinutes:
-            wait_time = 60 * (attempt + 1)
-            logging.warning(f"⏳ Rate limit. Waiting {wait_time}s...")
-            last_upload_log = f"⏳ Rate limit. Waiting {wait_time}s..."
-            time.sleep(wait_time)
+            time.sleep(60 * (attempt + 1))
         except ClientError as e:
-            logging.error(f"⚠️ Client error: {e}")
-            last_upload_log = f"⚠️ Client error: {e}"
-            return False
+            return f"⚠ Client error: {e}"
         except Exception as e:
-            logging.error(f"❌ Failed to upload {video_path}: {e}")
-            last_upload_log = f"❌ Failed: {e}"
-    return False
+            return f"❌ Failed: {e}"
+    return "❌ Upload failed after retries"
 
 def upload_all_videos(username):
-    account = next(acc for acc in accounts if acc["username"] == username)
-    upload_delay = account.get("upload_delay", 10)
-    caption = account.get("caption", "")
     cl = load_client(username)
-
     folder = os.path.join(BASE_DIR, username)
-    if not os.path.isdir(folder):
-        logging.warning(f"📁 Folder not found for {username}")
-        return
-
+    os.makedirs(folder, exist_ok=True)
     files = sorted([f for f in os.listdir(folder) if f.endswith(".mp4")])
+    results = []
+    cursor.execute("SELECT caption FROM accounts WHERE username = ?", (username,))
+    default_caption = cursor.fetchone()[0] or ""
     for file in files:
         path = os.path.join(folder, file)
-        success = upload_video(cl, path, caption)
-        if not success:
-            logging.error(f"⚠️ Skipped: {file}")
-        time.sleep(upload_delay)
+        cursor.execute("SELECT caption FROM video_captions WHERE username = ? AND filename = ?", (username, file))
+        row = cursor.fetchone()
+        caption = row[0] if row else default_caption
+        result = upload_video(cl, path, caption)
+        results.append(result)
+        time.sleep(10)
+    last_upload_logs[username] = "\n".join(results)
 
-def schedule_upload(account):
-    for t in account["upload_times"]:
-        schedule.every().day.at(t).do(lambda acc=account["username"]: executor.submit(upload_all_videos, acc))
-        logging.info(f"📅 Scheduled {account['username']} at {t}")
+def schedule_upload(username):
+    times = get_schedule(username)
+    for t in times:
+        def job(user=username):
+            executor.submit(upload_all_videos, user)
+        schedule.every().day.at(t).do(job)
 
-# === TELEGRAM HANDLERS ===
+# === TELEGRAM BOT ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        return await update.message.reply_text("🚫 Unauthorized.")
-
-    keyboard = [
-        [InlineKeyboardButton("📅 View Schedule", callback_data='view_schedule')],
-        [InlineKeyboardButton("📂 Videos Left", callback_data='videos_left')],
-        [InlineKeyboardButton("🚀 Force Upload Now", callback_data='force_upload')],
-        [InlineKeyboardButton("🧾 Last Upload Status", callback_data='last_status')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🤖 Bot Control Panel", reply_markup=reply_markup)
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 Unauthorized.")
+        return
+    users = get_accounts()
+    keyboard = [[InlineKeyboardButton(f"👤 {user[0]}", callback_data=f"user_{user[0]}")] for user in users]
+    keyboard.append([InlineKeyboardButton("➕ Add Account", callback_data="add_account")])
+    await update.message.reply_text("🤖 Choose Account to Manage:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_upload_log
     query = update.callback_query
     await query.answer()
-
-    if query.from_user.id != ADMIN_USER_ID:
+    if query.from_user.id not in ADMIN_IDS:
         return await query.edit_message_text("🚫 Unauthorized.")
+    data = query.data
 
-    if query.data == "view_schedule":
-        times = "\n".join(accounts[0]["upload_times"])
-        await query.edit_message_text(f"📅 Schedule:\n{times}")
+    if data == "add_account":
+        context.user_data["adding_account"] = True
+        await query.edit_message_text("✏️ Send username and password like this:\n`username,password`", parse_mode='Markdown')
 
-    elif query.data == "videos_left":
-        folder = os.path.join(BASE_DIR, accounts[0]["username"])
-        count = len([f for f in os.listdir(folder) if f.endswith(".mp4")])
-        await query.edit_message_text(f"📂 {count} videos left to upload.")
+    elif data.startswith("user_"):
+        username = data.split("_", 1)[1]
+        context.user_data["active_user"] = username
+        keyboard = [
+            [InlineKeyboardButton("📅 View Schedule", callback_data=f"schedule_{username}"),
+             InlineKeyboardButton("➕ Add Time", callback_data=f"add_{username}")],
+            [InlineKeyboardButton("➖ Remove Time", callback_data=f"remove_{username}"),
+             InlineKeyboardButton("🚀 Force Upload", callback_data=f"force_{username}")],
+            [InlineKeyboardButton("✏️ Change Caption", callback_data=f"caption_{username}"),
+             InlineKeyboardButton("🧾 Last Upload", callback_data=f"status_{username}")]
+        ]
+        await query.edit_message_text(f"🔧 Manage: {username}", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif query.data == "force_upload":
-        username = accounts[0]["username"]
-        executor.submit(upload_all_videos, username)
-        await query.edit_message_text("🚀 Upload started manually.")
+    elif data.startswith("schedule_"):
+        username = data.split("_", 1)[1]
+        times = get_schedule(username)
+        await query.edit_message_text("📅 Schedule:\n" + "\n".join(times) if times else "No schedule set.")
 
-    elif query.data == "last_status":
-        await query.edit_message_text(f"🧾 Last Upload:\n{last_upload_log}")
+    elif data.startswith("add_"):
+        context.user_data["pending_add"] = data.split("_", 1)[1]
+        await query.edit_message_text("🕒 Send time to add (HH:MM):")
 
-# === MAIN ENTRY ===
+    elif data.startswith("remove_"):
+        context.user_data["pending_remove"] = data.split("_", 1)[1]
+        await query.edit_message_text("🕒 Send time to remove (HH:MM):")
+
+    elif data.startswith("force_"):
+        username = data.split("_", 1)[1]
+        await query.edit_message_text(f"🚀 Upload started for {username}...")
+        async def upload_task():
+            try:
+                upload_all_videos(username)
+                await context.bot.send_message(query.from_user.id, f"✅ Upload finished for {username}\n{last_upload_logs.get(username)}")
+            except Exception as e:
+                await context.bot.send_message(query.from_user.id, f"❌ Upload error: {e}")
+        asyncio.create_task(upload_task())
+
+    elif data.startswith("caption_"):
+        context.user_data["pending_caption_edit"] = data.split("_", 1)[1]
+        await query.edit_message_text("✏️ Send new caption:")
+
+    elif data.startswith("status_"):
+        username = data.split("_", 1)[1]
+        await query.edit_message_text(f"🧾 Last Upload:\n{last_upload_logs.get(username, 'No uploads yet')}")
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if "pending_add" in context.user_data:
+        username = context.user_data.pop("pending_add")
+        add_schedule(username, text)
+        await update.message.reply_text(f"✅ Time {text} added.")
+    elif "pending_remove" in context.user_data:
+        username = context.user_data.pop("pending_remove")
+        remove_schedule(username, text)
+        await update.message.reply_text(f"✅ Time {text} removed.")
+    elif "pending_caption_edit" in context.user_data:
+        username = context.user_data.pop("pending_caption_edit")
+        cursor.execute("UPDATE accounts SET caption = ? WHERE username = ?", (text, username))
+        conn.commit()
+        await update.message.reply_text(f"✏️ Caption updated for {username}:\n{text}")
+    elif context.user_data.get("adding_account"):
+        try:
+            uname, pwd = text.split(",", 1)
+            cursor.execute("INSERT OR IGNORE INTO accounts (username, password, caption) VALUES (?, ?, '')", (uname.lower(), pwd))
+            conn.commit()
+            os.makedirs(os.path.join(BASE_DIR, uname.lower()), exist_ok=True)
+            context.user_data.pop("adding_account")
+            await update.message.reply_text(f"✅ Account `{uname}` added.", parse_mode='Markdown')
+        except:
+            await update.message.reply_text("❌ Error. Send like this: `username,password`", parse_mode='Markdown')
+
+# === SCHEDULER ===
 def start_scheduler():
-    for account in accounts:
-        schedule_upload(account)
-    logging.info("✅ Scheduler ready. Waiting...")
+    for acc in get_accounts():
+        schedule_upload(acc[0])
     while True:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            logging.error(f"❌ Scheduler error: {e}")
         time.sleep(1)
 
+# === STARTUP ===
 async def main_async():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", start))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     await app.run_polling()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     executor.submit(start_scheduler)
-    if __name__ == "__main__":
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    executor.submit(start_scheduler)
-
-    import nest_asyncio
     nest_asyncio.apply()
-
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main_async())
-
+    asyncio.run(main_async())

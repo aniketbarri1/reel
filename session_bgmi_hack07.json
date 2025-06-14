@@ -1,22 +1,22 @@
 {
     "uuids": {
-        "phone_id": "14348646-c75e-499c-a3fa-27e126f109d0",
-        "uuid": "4e4db908-ddbc-4e46-a726-5f9957e93cc9",
-        "client_session_id": "6480eec3-528e-42d0-b8e8-38ff68738cf7",
-        "advertising_id": "b5ded799-1f00-402b-9711-c17092e04c02",
-        "android_device_id": "android-d45feffd5eb8a43a",
-        "request_id": "09b195e3-1b20-4328-88bc-d2ea146a5a0a",
-        "tray_session_id": "dd7ed4ed-a028-4ebc-a113-73b3ff6c1664"
+        "phone_id": "e8c002f3-f153-4f2a-9052-e78442ab24dc",
+        "uuid": "8c3a66e2-b40d-4c7c-891e-47b3d94ee42a",
+        "client_session_id": "2fb33c39-7bab-4a53-9f44-04b9dd24115d",
+        "advertising_id": "d4988979-1119-48d4-b7c0-840e29493902",
+        "android_device_id": "android-aef913e7fe11393d",
+        "request_id": "c43575c2-234b-4322-99e9-deab118c25fc",
+        "tray_session_id": "6b127995-2d54-431a-ae33-60663cf93fcb"
     },
-    "mid": "aEwykgABAAGmp8KJaGiEN6rTwyVu",
+    "mid": "aE0kaAABAAH_mdWon7Zb29EKMSEc",
     "ig_u_rur": null,
     "ig_www_claim": null,
     "authorization_data": {
         "ds_user_id": "72769829556",
-        "sessionid": "72769829556%3AKdaZO1yzqHHctd%3A14%3AAYdKLZ6faCIss7ZSsmp07Tywy6Z5sf0sQkWsjYjhPA"
+        "sessionid": "72769829556%3ASRdRWlSoipw4xD%3A5%3AAYetzgNwkf1GLnHWZi-lz-bClstd7piQ2xWfThdKjw"
     },
     "cookies": {},
-    "last_login": 1749824158.2302332,
+    "last_login": 1749886070.014963,
     "device_settings": {
         "manufacturer": "OnePlus",
         "model": "6T",

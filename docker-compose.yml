@@ -1,0 +1,11 @@
+version: '3.9'
+
+services:
+  uploader:
+    build: .
+    container_name: insta_uploader
+    restart: always
+    volumes:
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Kolkata
